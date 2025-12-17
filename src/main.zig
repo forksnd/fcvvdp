@@ -13,6 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 const std = @import("std");
+const y4m = @import("y4m.zig");
 const c = @cImport({
     @cInclude("third-party/spng.h");
     @cInclude("src/cvvdp.h");
@@ -73,6 +74,107 @@ fn hasExtension(path: []const u8, ext: []const u8) bool {
     if (path.len < ext.len) return false;
     const tail = path[path.len - ext.len ..];
     return std.ascii.eqlIgnoreCase(tail, ext);
+}
+
+fn yuv420ToRgb8FromFrame(allocator: std.mem.Allocator, frame: y4m.Frame) ![]u8 {
+    if (frame.chroma != .yuv420) return error.UnsupportedY4MChroma;
+
+    const width = frame.width;
+    const height = frame.height;
+
+    // Convert to RGB8 using a simple full-range BT.601-like YUV->RGB.
+    // This is intended for metric input, not broadcast-accurate color management.
+    const rgb = try allocator.alloc(u8, width * height * 3);
+    errdefer allocator.free(rgb);
+
+    const cw = width / 2;
+
+    const clampU8 = struct {
+        fn f(x: i32) u8 {
+            if (x < 0) return 0;
+            if (x > 255) return 255;
+            return @intCast(x);
+        }
+    }.f;
+
+    if (frame.bit_depth == .b8) {
+        const y_plane: []const u8 = frame.y;
+        const u_plane: []const u8 = frame.u;
+        const v_plane: []const u8 = frame.v;
+
+        for (0..height) |yy| {
+            for (0..width) |xx| {
+                const yv: i32 = y_plane[yy * width + xx];
+                const uv: i32 = u_plane[(yy / 2) * cw + (xx / 2)];
+                const vv: i32 = v_plane[(yy / 2) * cw + (xx / 2)];
+
+                const u_off = uv - 128;
+                const v_off = vv - 128;
+
+                const r = yv + ((359 * v_off) >> 8);
+                const g = yv - ((88 * u_off + 183 * v_off) >> 8);
+                const b = yv + ((454 * u_off) >> 8);
+
+                const i = (yy * width + xx) * 3;
+                rgb[i + 0] = clampU8(r);
+                rgb[i + 1] = clampU8(g);
+                rgb[i + 2] = clampU8(b);
+            }
+        }
+    } else if (frame.bit_depth == .b10) {
+        // Y4M 10-bit is commonly stored as 16-bit little-endian words with values in [0, 1023].
+        const y16 = try frame.yAsU16LE();
+        const u_plane16 = try frame.uAsU16LE();
+        const v_plane16 = try frame.vAsU16LE();
+
+        for (0..height) |yy| {
+            for (0..width) |xx| {
+                // Downshift from 10-bit to 8-bit by dropping low bits.
+                const yv: i32 = @intCast(y16[yy * width + xx] >> 2);
+                const uv: i32 = @intCast(u_plane16[(yy / 2) * cw + (xx / 2)] >> 2);
+                const vv: i32 = @intCast(v_plane16[(yy / 2) * cw + (xx / 2)] >> 2);
+
+                const u_off = uv - 128;
+                const v_off = vv - 128;
+
+                const r = yv + ((359 * v_off) >> 8);
+                const g = yv - ((88 * u_off + 183 * v_off) >> 8);
+                const b = yv + ((454 * u_off) >> 8);
+
+                const i = (yy * width + xx) * 3;
+                rgb[i + 0] = clampU8(r);
+                rgb[i + 1] = clampU8(g);
+                rgb[i + 2] = clampU8(b);
+            }
+        }
+    } else {
+        return error.UnsupportedY4MBitDepth;
+    }
+
+    return rgb;
+}
+
+pub fn loadY4MFirstFrameAsRGB(allocator: std.mem.Allocator, path: []const u8) !Image {
+    const file = try std.fs.cwd().openFile(path, .{});
+    defer file.close();
+
+    var dec = try y4m.Decoder.init(allocator, file);
+    defer dec.deinit();
+
+    const frame_opt = try dec.readFrame();
+    if (frame_opt == null) return error.EmptyY4M;
+
+    var frame = frame_opt.?;
+    defer frame.deinit(allocator);
+
+    const rgb = try yuv420ToRgb8FromFrame(allocator, frame);
+
+    return .{
+        .width = frame.width,
+        .height = frame.height,
+        .channels = 3,
+        .data = rgb,
+    };
 }
 
 pub fn toRGB8(allocator: std.mem.Allocator, img: Image) ![]u8 {
@@ -139,9 +241,9 @@ fn printUsage() void {
     print(
         \\fcvvdp | {s}
         \\
-        \\usage: fcvvdp [options] <reference.png> <distorted.png>
+        \\usage: fcvvdp [options] <reference.(png|y4m)> <distorted.(png|y4m)>
         \\
-        \\compare two PNG images using the CVVDP perceptual quality metric
+        \\compare two images/videos using the CVVDP perceptual quality metric
         \\
         \\options:
         \\  -m, --model <name>
@@ -211,64 +313,216 @@ pub fn main() !void {
         return error.MissingFiles;
     }
 
+    const ref_is_y4m = hasExtension(ref_filename.?, ".y4m");
+    const dis_is_y4m = hasExtension(dis_filename.?, ".y4m");
+
+    if (ref_is_y4m != dis_is_y4m) {
+        print("Error: Both inputs must be the same type (both .png or both .y4m)\n", .{});
+        return error.MismatchedInputTypes;
+    }
+
+    if (!ref_is_y4m) {
+        if (verbose and !json_output)
+            print("Loading reference: {s}\n", .{ref_filename.?});
+
+        var ref_img = try loadPNG(allocator, ref_filename.?);
+        defer ref_img.deinit(allocator);
+
+        if (verbose and !json_output)
+            print("Loading distorted: {s}\n", .{dis_filename.?});
+
+        var dis_img = try loadPNG(allocator, dis_filename.?);
+        defer dis_img.deinit(allocator);
+
+        if (ref_img.width != dis_img.width or ref_img.height != dis_img.height) {
+            print("Error: Image dimensions do not match\n", .{});
+            print("  Reference: {d}x{d}\n", .{ ref_img.width, ref_img.height });
+            print("  Distorted: {d}x{d}\n", .{ dis_img.width, dis_img.height });
+            return error.DimensionMismatch;
+        }
+
+        const ref_rgb = try toRGB8(allocator, ref_img);
+        defer allocator.free(ref_rgb);
+
+        const dis_rgb = try toRGB8(allocator, dis_img);
+        defer allocator.free(dis_rgb);
+
+        if (verbose and !json_output) {
+            print("Image size: {d}x{d}\n", .{ ref_img.width, ref_img.height });
+            print("Display model: {s}\n", .{displayModelName(display_model)});
+        }
+
+        var ref_cvvdp = c.FcvvdpImage{
+            .data = ref_rgb.ptr,
+            .width = @intCast(ref_img.width),
+            .height = @intCast(ref_img.height),
+            .stride = @intCast(ref_img.width * 3),
+            .format = c.CVVDP_PIXEL_FORMAT_RGB_UINT8,
+            .colorspace = c.CVVDP_COLORSPACE_SRGB,
+        };
+
+        var dis_cvvdp = c.FcvvdpImage{
+            .data = dis_rgb.ptr,
+            .width = @intCast(dis_img.width),
+            .height = @intCast(dis_img.height),
+            .stride = @intCast(dis_img.width * 3),
+            .format = c.CVVDP_PIXEL_FORMAT_RGB_UINT8,
+            .colorspace = c.CVVDP_COLORSPACE_SRGB,
+        };
+
+        if (verbose and !json_output)
+            print("Computing CVVDP metric...\n", .{});
+
+        var result: c.FcvvdpResult = undefined;
+        const err = c.cvvdp_compare_images(&ref_cvvdp, &dis_cvvdp, display_model, null, &result);
+
+        if (err != c.CVVDP_OK) {
+            print("Error: CVVDP comparison failed: {s}\n", .{c.cvvdp_error_string(err)});
+            return error.CVVDPError;
+        }
+
+        if (json_output) {
+            print(
+                \\{{
+                \\  "jod": {d:.6},
+                \\  "quality": {d:.6},
+                \\  "reference": "{s}",
+                \\  "distorted": "{s}",
+                \\  "width": {d},
+                \\  "height": {d}
+                \\}}
+            , .{ result.jod, result.quality, ref_filename.?, dis_filename.?, ref_cvvdp.width, ref_cvvdp.height });
+        } else {
+            if (verbose) {
+                print("\n", .{});
+                print("Results:\n", .{});
+                print("  JOD Score:    {d:.4}\n", .{result.jod});
+                print("  Quality (Q):  {d:.4}\n", .{result.quality});
+                print("\n", .{});
+
+                print("Interpretation: ", .{});
+                if (result.jod >= 9.5)
+                    print("Images are virtually identical\n", .{})
+                else if (result.jod >= 9.0)
+                    print("Barely visible difference\n", .{})
+                else if (result.jod >= 8.0)
+                    print("Slight visible difference\n", .{})
+                else if (result.jod >= 7.0)
+                    print("Noticeable but acceptable difference\n", .{})
+                else if (result.jod >= 5.0)
+                    print("Clearly visible, somewhat annoying difference\n", .{})
+                else if (result.jod >= 3.0)
+                    print("Very visible, annoying difference\n", .{})
+                else
+                    print("Large, unacceptable difference\n", .{});
+            } else print("JOD: {d:.4}\n", .{result.jod});
+        }
+        return;
+    }
+
     if (verbose and !json_output)
-        print("Loading reference: {s}\n", .{ref_filename.?});
+        print("Opening reference video: {s}\n", .{ref_filename.?});
 
-    var ref_img = try loadPNG(allocator, ref_filename.?);
-    defer ref_img.deinit(allocator);
+    const ref_file = try std.fs.cwd().openFile(ref_filename.?, .{});
+    defer ref_file.close();
+    var ref_dec = try y4m.Decoder.init(allocator, ref_file);
+    defer ref_dec.deinit();
 
     if (verbose and !json_output)
-        print("Loading distorted: {s}\n", .{dis_filename.?});
+        print("Opening distorted video: {s}\n", .{dis_filename.?});
 
-    var dis_img = try loadPNG(allocator, dis_filename.?);
-    defer dis_img.deinit(allocator);
+    const dis_file = try std.fs.cwd().openFile(dis_filename.?, .{});
+    defer dis_file.close();
+    var dis_dec = try y4m.Decoder.init(allocator, dis_file);
+    defer dis_dec.deinit();
 
-    if (ref_img.width != dis_img.width or ref_img.height != dis_img.height) {
-        print("Error: Image dimensions do not match\n", .{});
-        print("  Reference: {d}x{d}\n", .{ ref_img.width, ref_img.height });
-        print("  Distorted: {d}x{d}\n", .{ dis_img.width, dis_img.height });
+    if (ref_dec.header.width != dis_dec.header.width or ref_dec.header.height != dis_dec.header.height) {
+        print("Error: Video dimensions do not match\n", .{});
+        print("  Reference: {d}x{d}\n", .{ ref_dec.header.width, ref_dec.header.height });
+        print("  Distorted: {d}x{d}\n", .{ dis_dec.header.width, dis_dec.header.height });
         return error.DimensionMismatch;
     }
 
-    const ref_rgb = try toRGB8(allocator, ref_img);
-    defer allocator.free(ref_rgb);
-
-    const dis_rgb = try toRGB8(allocator, dis_img);
-    defer allocator.free(dis_rgb);
-
     if (verbose and !json_output) {
-        print("Image size: {d}x{d}\n", .{ ref_img.width, ref_img.height });
+        print("Video size: {d}x{d}\n", .{ ref_dec.header.width, ref_dec.header.height });
         print("Display model: {s}\n", .{displayModelName(display_model)});
     }
 
-    var ref_cvvdp = c.FcvvdpImage{
-        .data = ref_rgb.ptr,
-        .width = @intCast(ref_img.width),
-        .height = @intCast(ref_img.height),
-        .stride = @intCast(ref_img.width * 3),
-        .format = c.CVVDP_PIXEL_FORMAT_RGB_UINT8,
-        .colorspace = c.CVVDP_COLORSPACE_SRGB,
-    };
+    const fps: f32 = if (ref_dec.header.fps_num != 0)
+        @as(f32, @floatFromInt(ref_dec.header.fps_num)) / @as(f32, @floatFromInt(ref_dec.header.fps_den))
+    else
+        0.0;
 
-    var dis_cvvdp = c.FcvvdpImage{
-        .data = dis_rgb.ptr,
-        .width = @intCast(dis_img.width),
-        .height = @intCast(dis_img.height),
-        .stride = @intCast(dis_img.width * 3),
-        .format = c.CVVDP_PIXEL_FORMAT_RGB_UINT8,
-        .colorspace = c.CVVDP_COLORSPACE_SRGB,
-    };
-
-    if (verbose and !json_output)
-        print("Computing CVVDP metric...\n", .{});
-
-    var result: c.FcvvdpResult = undefined;
-    const err = c.cvvdp_compare_images(&ref_cvvdp, &dis_cvvdp, display_model, null, &result);
-
-    if (err != c.CVVDP_OK) {
-        print("Error: CVVDP comparison failed: {s}\n", .{c.cvvdp_error_string(err)});
+    var ctx_ptr: ?*c.FcvvdpCtx = null;
+    const create_err = c.cvvdp_create(
+        @intCast(ref_dec.header.width),
+        @intCast(ref_dec.header.height),
+        fps,
+        display_model,
+        null,
+        &ctx_ptr,
+    );
+    if (create_err != c.CVVDP_OK or ctx_ptr == null) {
+        print("Error: CVVDP context creation failed: {s}\n", .{c.cvvdp_error_string(create_err)});
         return error.CVVDPError;
     }
+    defer c.cvvdp_destroy(ctx_ptr.?);
+
+    if (verbose and !json_output)
+        print("Processing frames...\n", .{});
+
+    var frame_index: usize = 0;
+    var result: c.FcvvdpResult = undefined;
+
+    while (true) {
+        const ref_frame_opt = try ref_dec.readFrame();
+        const dis_frame_opt = try dis_dec.readFrame();
+
+        if (ref_frame_opt == null and dis_frame_opt == null) break;
+        if (ref_frame_opt == null or dis_frame_opt == null) {
+            print("Error: Video frame count does not match\n", .{});
+            return error.FrameCountMismatch;
+        }
+
+        var ref_frame = ref_frame_opt.?;
+        defer ref_frame.deinit(allocator);
+        var dis_frame = dis_frame_opt.?;
+        defer dis_frame.deinit(allocator);
+
+        // Convert both frames to RGB8
+        const ref_rgb = try yuv420ToRgb8FromFrame(allocator, ref_frame);
+        defer allocator.free(ref_rgb);
+        const dis_rgb = try yuv420ToRgb8FromFrame(allocator, dis_frame);
+        defer allocator.free(dis_rgb);
+
+        var ref_cvvdp = c.FcvvdpImage{
+            .data = ref_rgb.ptr,
+            .width = @intCast(ref_frame.width),
+            .height = @intCast(ref_frame.height),
+            .stride = @intCast(ref_frame.width * 3),
+            .format = c.CVVDP_PIXEL_FORMAT_RGB_UINT8,
+            .colorspace = c.CVVDP_COLORSPACE_SRGB,
+        };
+
+        var dis_cvvdp = c.FcvvdpImage{
+            .data = dis_rgb.ptr,
+            .width = @intCast(dis_frame.width),
+            .height = @intCast(dis_frame.height),
+            .stride = @intCast(dis_frame.width * 3),
+            .format = c.CVVDP_PIXEL_FORMAT_RGB_UINT8,
+            .colorspace = c.CVVDP_COLORSPACE_SRGB,
+        };
+
+        const proc_err = c.cvvdp_process_frame(ctx_ptr.?, &ref_cvvdp, &dis_cvvdp, &result);
+        if (proc_err != c.CVVDP_OK) {
+            print("Error: CVVDP frame processing failed at frame {d}: {s}\n", .{ frame_index, c.cvvdp_error_string(proc_err) });
+            return error.CVVDPError;
+        }
+
+        frame_index += 1;
+    }
+
+    if (frame_index == 0) return error.EmptyY4M;
 
     if (json_output) {
         print(
@@ -278,20 +532,22 @@ pub fn main() !void {
             \\  "reference": "{s}",
             \\  "distorted": "{s}",
             \\  "width": {d},
-            \\  "height": {d}
+            \\  "height": {d},
+            \\  "frames": {d}
             \\}}
-        , .{ result.jod, result.quality, ref_filename.?, dis_filename.?, ref_cvvdp.width, ref_cvvdp.height });
+        , .{ result.jod, result.quality, ref_filename.?, dis_filename.?, ref_dec.header.width, ref_dec.header.height, frame_index });
     } else {
         if (verbose) {
             print("\n", .{});
             print("Results:\n", .{});
+            print("  Frames:       {d}\n", .{frame_index});
             print("  JOD Score:    {d:.4}\n", .{result.jod});
             print("  Quality (Q):  {d:.4}\n", .{result.quality});
             print("\n", .{});
 
             print("Interpretation: ", .{});
             if (result.jod >= 9.5)
-                print("Images are virtually identical\n", .{})
+                print("Videos are virtually identical\n", .{})
             else if (result.jod >= 9.0)
                 print("Barely visible difference\n", .{})
             else if (result.jod >= 8.0)
@@ -306,4 +562,5 @@ pub fn main() !void {
                 print("Large, unacceptable difference\n", .{});
         } else print("JOD: {d:.4}\n", .{result.jod});
     }
+    return;
 }
