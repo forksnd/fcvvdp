@@ -17,9 +17,16 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
-    const strip = b.option(bool, "strip", "strip symbols from the binary, defaults to false") orelse false;
+    const strip = if (optimize == .ReleaseFast) true else false;
     const flto = b.option(bool, "flto", "enable Link Time Optimization, defaults to false") orelse false;
     const options = b.addOptions();
+
+    // cvvdp.h
+    const install_header = b.addInstallFile(
+        b.path("src/cvvdp.h"),
+        "include/cvvdp.h",
+    );
+    b.getInstallStep().dependOn(&install_header.step);
 
     // 'libcvvdp.a' static lib
     const cvvdp = b.addLibrary(.{
