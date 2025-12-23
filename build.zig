@@ -43,7 +43,7 @@ pub fn build(b: *std.Build) void {
     };
     cvvdp.root_module.addCSourceFiles(.{
         .files = &cvvdp_sources,
-        .flags = if (flto) &cvvdp_flags ++ &[_][]const u8{"-flto=thin"} else &cvvdp_flags,
+        .flags = if (flto) &cvvdp_flags ++ &[_][]const u8{"-flto"} else &cvvdp_flags,
     });
     cvvdp.root_module.addIncludePath(b.path("."));
     b.installArtifact(cvvdp);
