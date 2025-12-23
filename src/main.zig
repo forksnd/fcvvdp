@@ -238,9 +238,8 @@ fn displayModelName(model: c.FcvvdpDisplayModel) []const u8 {
 }
 
 fn printUsage() void {
+    print("\n", .{});
     print(
-        \\fcvvdp | {s}
-        \\
         \\usage: fcvvdp [options] <reference.(png|y4m)> <distorted.(png|y4m)>
         \\
         \\compare two images/videos using the CVVDP perceptual quality metric
@@ -256,15 +255,14 @@ fn printUsage() void {
         \\  -h, --help
         \\      show this help message
         \\
-    , .{
-        c.cvvdp_version_string(),
-    });
+    , .{});
 }
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
+    print("\x1b[38;5;208mfcvvdp\x1b[0m by Halide Compression, LLC | {s}\n", .{c.cvvdp_version_string()});
 
     var args = std.process.args();
     _ = args.next();
