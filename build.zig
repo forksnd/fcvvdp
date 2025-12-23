@@ -17,16 +17,9 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
-    const strip = if (optimize == .ReleaseFast) true else false;
+    const strip = b.option(bool, "strip", "strip symbols from the binary, defaults to false") orelse false;
     const flto = b.option(bool, "flto", "enable Link Time Optimization, defaults to false") orelse false;
     const options = b.addOptions();
-
-    // cvvdp.h
-    const install_header = b.addInstallFile(
-        b.path("src/cvvdp.h"),
-        "include/cvvdp.h",
-    );
-    b.getInstallStep().dependOn(&install_header.step);
 
     // 'libcvvdp.a' static lib
     const cvvdp = b.addLibrary(.{
@@ -48,13 +41,15 @@ pub fn build(b: *std.Build) void {
         "-Wpedantic",
         "-O3",
     };
-    cvvdp.root_module.linkSystemLibrary("m", .{ .preferred_link_mode = .static });
     cvvdp.root_module.addCSourceFiles(.{
         .files = &cvvdp_sources,
         .flags = if (flto) &cvvdp_flags ++ &[_][]const u8{"-flto=thin"} else &cvvdp_flags,
     });
     cvvdp.root_module.addIncludePath(b.path("."));
     b.installArtifact(cvvdp);
+
+    // cvvdp.h
+    cvvdp.installHeader(b.path("src/cvvdp.h"), "cvvdp.h");
 
     // libspng
     const spng = b.addLibrary(.{
@@ -69,7 +64,6 @@ pub fn build(b: *std.Build) void {
     const spng_sources = [_][]const u8{
         "third-party/spng.c",
     };
-    spng.root_module.linkSystemLibrary("m", .{ .preferred_link_mode = .static });
     spng.root_module.addCSourceFiles(.{
         .files = &spng_sources,
         .flags = if (flto) &cvvdp_flags ++ &[_][]const u8{"-flto=thin"} else &cvvdp_flags,

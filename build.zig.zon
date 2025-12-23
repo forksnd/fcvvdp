@@ -2,7 +2,7 @@
     .name = .fcvvdp,
     .version = "0.0.1",
     .fingerprint = 0xfe41744458a5e60e,
-    .minimum_zig_version = "0.15.2",
+    .minimum_zig_version = "0.15.0",
     .paths = .{
         "build.zig",
         "build.zig.zon",
