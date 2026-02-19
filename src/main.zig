@@ -14,6 +14,8 @@
 // limitations under the License.
 const std = @import("std");
 const y4m = @import("y4m.zig");
+const ppm = @import("ppm.zig");
+const pam = @import("pam.zig");
 const c = @cImport({
     @cInclude("third-party/spng.h");
     @cInclude("src/cvvdp.h");
@@ -32,6 +34,11 @@ pub const Image = struct {
         self.* = undefined;
     }
 };
+
+pub inline fn requantize16to8(x: u16) u8 {
+    const t: u32 = @as(u32, x) * 255 + 32768;
+    return @intCast((t + (t >> 16)) >> 16);
+}
 
 pub fn loadPNG(allocator: std.mem.Allocator, path: []const u8) !Image {
     const file = try std.fs.cwd().openFile(path, .{});
@@ -240,7 +247,7 @@ fn displayModelName(model: c.FcvvdpDisplayModel) []const u8 {
 fn printUsage() void {
     print("\n", .{});
     print(
-        \\usage: fcvvdp [options] <reference.(png|y4m)> <distorted.(png|y4m)>
+        \\usage: fcvvdp [options] <reference> <distorted>
         \\
         \\compare two images/videos using the CVVDP perceptual quality metric
         \\
@@ -255,7 +262,19 @@ fn printUsage() void {
         \\  -h, --help
         \\      show this help message
         \\
+        \\ sRGB PNG, PPM, PGM, PAM, or Y4M input expected
     , .{});
+}
+
+fn loadImage(allocator: std.mem.Allocator, path: []const u8) !Image {
+    if (hasExtension(path, ".png"))
+        return loadPNG(allocator, path)
+    else if (ppm.isPPM(path))
+        return try ppm.loadPPM(allocator, path)
+    else if (pam.isPAM(path))
+        return try pam.loadPAM(allocator, path)
+    else
+        return error.UnsupportedFileFormat;
 }
 
 pub fn main() !void {
@@ -306,7 +325,7 @@ pub fn main() !void {
     }
 
     if (ref_filename == null or dis_filename == null) {
-        print("Error: Two input PNG files are required\n", .{});
+        print("Error: Two input image files are required\n", .{});
         printUsage();
         return error.MissingFiles;
     }
@@ -315,7 +334,7 @@ pub fn main() !void {
     const dis_is_y4m = hasExtension(dis_filename.?, ".y4m");
 
     if (ref_is_y4m != dis_is_y4m) {
-        print("Error: Both inputs must be the same type (both .png or both .y4m)\n", .{});
+        print("Error: Both inputs must be Y4M if one is\n", .{});
         return error.MismatchedInputTypes;
     }
 
@@ -323,13 +342,13 @@ pub fn main() !void {
         if (verbose and !json_output)
             print("Loading reference: {s}\n", .{ref_filename.?});
 
-        var ref_img = try loadPNG(allocator, ref_filename.?);
+        var ref_img = try loadImage(allocator, ref_filename.?);
         defer ref_img.deinit(allocator);
 
         if (verbose and !json_output)
             print("Loading distorted: {s}\n", .{dis_filename.?});
 
-        var dis_img = try loadPNG(allocator, dis_filename.?);
+        var dis_img = try loadImage(allocator, dis_filename.?);
         defer dis_img.deinit(allocator);
 
         if (ref_img.width != dis_img.width or ref_img.height != dis_img.height) {
