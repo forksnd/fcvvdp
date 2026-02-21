@@ -284,7 +284,7 @@ FcvvdpError cvvdp_temporal_filter_init(TemporalFilter *const filter,
     }
 
     for (int i = 0; i < fft_size; i++)
-        freq[i] = fps * i / 2.0f;
+        freq[i] = fps * i / (2.0f * fft_size);
 
     for (int j = 0; j < 4; j++) {
         if (j < 3) {
