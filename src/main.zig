@@ -112,49 +112,19 @@ fn imageToLocal8Bit(allocator: std.mem.Allocator, source: imgio.Image) !Image {
 }
 
 fn yuv420ToRgb8FromFrame(allocator: std.mem.Allocator, frame: imgio.YuvFrame) ![]u8 {
-    if (frame.chroma != .yuv420) return error.UnsupportedY4MChroma;
-
-    var eight = try frame.to8Bit(allocator);
-    defer eight.deinit(allocator);
-
-    const width = eight.width;
-    const height = eight.height;
-
-    // Convert to RGB8 using a simple full-range BT.601-like YUV->RGB.
-    // This is intended for metric input, not broadcast-accurate color management.
-    const rgb = try allocator.alloc(u8, width * height * 3);
+    // Convert to sRGB8 after range expansion and chroma reconstruction.
+    // Linear RGB keeps the source bit depth until the final quantization.
+    var converter = try imgio.YuvRgbConverter.init(allocator, frame.width, frame.height);
+    defer converter.deinit();
+    const rgb = try allocator.alloc(u8, frame.width * frame.height * 3);
     errdefer allocator.free(rgb);
-
-    const cw = (width + 1) / 2;
-
-    const clampU8 = struct {
-        fn f(x: i32) u8 {
-            if (x < 0) return 0;
-            if (x > 255) return 255;
-            return @intCast(x);
-        }
-    }.f;
-
-    for (0..height) |yy| {
-        for (0..width) |xx| {
-            const yv: i32 = eight.y[yy * width + xx];
-            const uv: i32 = eight.u[(yy / 2) * cw + (xx / 2)];
-            const vv: i32 = eight.v[(yy / 2) * cw + (xx / 2)];
-
-            const u_off = uv - 128;
-            const v_off = vv - 128;
-
-            const r = yv + ((359 * v_off) >> 8);
-            const g = yv - ((88 * u_off + 183 * v_off) >> 8);
-            const b = yv + ((454 * u_off) >> 8);
-
-            const i = (yy * width + xx) * 3;
-            rgb[i + 0] = clampU8(r);
-            rgb[i + 1] = clampU8(g);
-            rgb[i + 2] = clampU8(b);
-        }
+    const linear = try allocator.alloc(f32, rgb.len);
+    defer allocator.free(linear);
+    try converter.convert(frame, linear);
+    for (linear, rgb) |v, *dst| {
+        const encoded = if (v <= 0.0031308) v * 12.92 else 1.055 * std.math.pow(f32, v, 1.0 / 2.4) - 0.055;
+        dst.* = @intFromFloat(@round(std.math.clamp(encoded, 0, 1) * 255));
     }
-
     return rgb;
 }
 
@@ -556,6 +526,14 @@ pub fn main(init: std.process.Init) !void {
     var frame_index: usize = 0;
     var result: c.FcvvdpResult = undefined;
 
+    var converter = try imgio.YuvRgbConverter.init(allocator, ref_dec.header.width, ref_dec.header.height);
+    defer converter.deinit();
+    const pixels = ref_dec.header.width * ref_dec.header.height * 3;
+    const ref_rgb = try allocator.alloc(f32, pixels);
+    defer allocator.free(ref_rgb);
+    const dis_rgb = try allocator.alloc(f32, pixels);
+    defer allocator.free(dis_rgb);
+
     while (true) {
         const ref_frame_opt = try ref_dec.readFrame();
         const dis_frame_opt = try dis_dec.readFrame();
@@ -571,28 +549,26 @@ pub fn main(init: std.process.Init) !void {
         var dis_frame = dis_frame_opt.?;
         defer dis_frame.deinit(allocator);
 
-        // Convert both frames to RGB8
-        const ref_rgb = try yuv420ToRgb8FromFrame(allocator, ref_frame);
-        defer allocator.free(ref_rgb);
-        const dis_rgb = try yuv420ToRgb8FromFrame(allocator, dis_frame);
-        defer allocator.free(dis_rgb);
+        // Convert both frames to linear RGB.
+        try converter.convert(ref_frame, ref_rgb);
+        try converter.convert(dis_frame, dis_rgb);
 
         var ref_cvvdp = c.FcvvdpImage{
             .data = ref_rgb.ptr,
             .width = @intCast(ref_frame.width),
             .height = @intCast(ref_frame.height),
-            .stride = @intCast(ref_frame.width * 3),
-            .format = c.CVVDP_PIXEL_FORMAT_RGB_UINT8,
-            .colorspace = c.CVVDP_COLORSPACE_SRGB,
+            .stride = @intCast(ref_frame.width * 3 * @sizeOf(f32)),
+            .format = c.CVVDP_PIXEL_FORMAT_RGB_FLOAT,
+            .colorspace = c.CVVDP_COLORSPACE_LINEAR,
         };
 
         var dis_cvvdp = c.FcvvdpImage{
             .data = dis_rgb.ptr,
             .width = @intCast(dis_frame.width),
             .height = @intCast(dis_frame.height),
-            .stride = @intCast(dis_frame.width * 3),
-            .format = c.CVVDP_PIXEL_FORMAT_RGB_UINT8,
-            .colorspace = c.CVVDP_COLORSPACE_SRGB,
+            .stride = @intCast(dis_frame.width * 3 * @sizeOf(f32)),
+            .format = c.CVVDP_PIXEL_FORMAT_RGB_FLOAT,
+            .colorspace = c.CVVDP_COLORSPACE_LINEAR,
         };
 
         const proc_err = c.cvvdp_process_frame(ctx_ptr.?, &ref_cvvdp, &dis_cvvdp, &result);

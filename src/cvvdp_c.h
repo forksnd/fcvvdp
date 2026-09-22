@@ -54,9 +54,9 @@ static inline void cvvdp_rgb_to_xyz_impl(
         const float gi = data->y[i];
         const float bi = data->z[i];
 
-        data->x[i] = 0.4124564f * ri + 0.3575761f * gi + 0.1804375f * bi;
-        data->y[i] = 0.2126729f * ri + 0.7151522f * gi + 0.0721750f * bi;
-        data->z[i] = 0.0193339f * ri + 0.1191920f * gi + 0.9503041f * bi;
+        data->x[i] = 0.4124f * ri + 0.3576f * gi + 0.1805f * bi;
+        data->y[i] = 0.2126f * ri + 0.7152f * gi + 0.0722f * bi;
+        data->z[i] = 0.0193f * ri + 0.1192f * gi + 0.9505f * bi;
     }
 }
 
@@ -94,7 +94,8 @@ static inline void cvvdp_contrast_impl(
 {
     for (int i = start; i < end; i++) {
         data->dst[i] =
-            ((data->src[i] - data->expanded[i]) / fmaxf(0.01f, data->L_bkg[i])) *
+            fminf((data->src[i] - data->expanded[i]) /
+                fmaxf(0.01f, data->L_bkg[i]), 1000.0f) *
             data->contrast_scale;
     }
 }
@@ -108,7 +109,7 @@ static inline void cvvdp_luma_contrast_impl(
         const float L_bkg = fmaxf(0.01f, data->expanded[i]);
         data->L_bkg[i] = L_bkg;
         data->dst[i] =
-            ((data->src[i] - data->expanded[i]) / L_bkg) *
+            fminf((data->src[i] - L_bkg) / L_bkg, 1000.0f) *
             data->contrast_scale;
     }
 }
@@ -119,7 +120,7 @@ static inline void cvvdp_normalize_impl(
     const int end)
 {
     for (int i = start; i < end; i++)
-        data->dst[i] = data->src[i] / data->denom;
+        data->dst[i] = fminf(data->src[i] / data->denom, 1000.0f);
 }
 
 static inline void cvvdp_min_abs_impl(
