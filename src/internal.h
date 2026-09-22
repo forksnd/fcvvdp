@@ -157,6 +157,7 @@ typedef struct FcvvdpCtx {
     float* pyr_ref[CVVDP_MAX_LEVELS][CVVDP_NUM_CHANNELS];
     float* pyr_dst[CVVDP_MAX_LEVELS][CVVDP_NUM_CHANNELS];
     float* pyr_L_bkg[CVVDP_MAX_LEVELS];
+    float* pyr_dst_L_bkg[CVVDP_MAX_LEVELS];
     float* pyr_temp;
     float* pyr_reduced;
     float* pyr_expanded;

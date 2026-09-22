@@ -244,17 +244,17 @@ static inline void cvvdp_rgb_to_xyz_impl(
         const __m256 g = _mm256_loadu_ps(data->y + i);
         const __m256 b = _mm256_loadu_ps(data->z + i);
 
-        __m256 x = _mm256_mul_ps(r, _mm256_set1_ps(0.4124564f));
-        x = cvvdp_avx2_madd_n(x, g, 0.3575761f);
-        x = cvvdp_avx2_madd_n(x, b, 0.1804375f);
+        __m256 x = _mm256_mul_ps(r, _mm256_set1_ps(0.4124f));
+        x = cvvdp_avx2_madd_n(x, g, 0.3576f);
+        x = cvvdp_avx2_madd_n(x, b, 0.1805f);
 
-        __m256 y = _mm256_mul_ps(r, _mm256_set1_ps(0.2126729f));
-        y = cvvdp_avx2_madd_n(y, g, 0.7151522f);
-        y = cvvdp_avx2_madd_n(y, b, 0.0721750f);
+        __m256 y = _mm256_mul_ps(r, _mm256_set1_ps(0.2126f));
+        y = cvvdp_avx2_madd_n(y, g, 0.7152f);
+        y = cvvdp_avx2_madd_n(y, b, 0.0722f);
 
-        __m256 z = _mm256_mul_ps(r, _mm256_set1_ps(0.0193339f));
-        z = cvvdp_avx2_madd_n(z, g, 0.1191920f);
-        z = cvvdp_avx2_madd_n(z, b, 0.9503041f);
+        __m256 z = _mm256_mul_ps(r, _mm256_set1_ps(0.0193f));
+        z = cvvdp_avx2_madd_n(z, g, 0.1192f);
+        z = cvvdp_avx2_madd_n(z, b, 0.9505f);
 
         _mm256_storeu_ps(data->x + i, x);
         _mm256_storeu_ps(data->y + i, y);
@@ -266,9 +266,9 @@ static inline void cvvdp_rgb_to_xyz_impl(
         const float gi = data->y[i];
         const float bi = data->z[i];
 
-        data->x[i] = 0.4124564f * ri + 0.3575761f * gi + 0.1804375f * bi;
-        data->y[i] = 0.2126729f * ri + 0.7151522f * gi + 0.0721750f * bi;
-        data->z[i] = 0.0193339f * ri + 0.1191920f * gi + 0.9503041f * bi;
+        data->x[i] = 0.4124f * ri + 0.3576f * gi + 0.1805f * bi;
+        data->y[i] = 0.2126f * ri + 0.7152f * gi + 0.0722f * bi;
+        data->z[i] = 0.0193f * ri + 0.1192f * gi + 0.9505f * bi;
     }
 }
 
@@ -343,12 +343,14 @@ static inline void cvvdp_contrast_impl(
             _mm256_max_ps(vfloor, _mm256_loadu_ps(data->L_bkg + i));
         const __m256 contrast =
             _mm256_div_ps(_mm256_sub_ps(src, expanded), L_bkg);
-        _mm256_storeu_ps(data->dst + i, _mm256_mul_ps(contrast, vscale));
+        _mm256_storeu_ps(data->dst + i, _mm256_mul_ps(
+            _mm256_min_ps(contrast, _mm256_set1_ps(1000.0f)), vscale));
     }
 
     for (; i < end; i++) {
         data->dst[i] =
-            ((data->src[i] - data->expanded[i]) / fmaxf(0.01f, data->L_bkg[i])) *
+            fminf((data->src[i] - data->expanded[i]) /
+                fmaxf(0.01f, data->L_bkg[i]), 1000.0f) *
             data->contrast_scale;
     }
 }
@@ -366,16 +368,17 @@ static inline void cvvdp_luma_contrast_impl(
         const __m256 expanded = _mm256_loadu_ps(data->expanded + i);
         const __m256 L_bkg = _mm256_max_ps(vfloor, expanded);
         const __m256 contrast =
-            _mm256_div_ps(_mm256_sub_ps(src, expanded), L_bkg);
+            _mm256_div_ps(_mm256_sub_ps(src, L_bkg), L_bkg);
         _mm256_storeu_ps(data->L_bkg + i, L_bkg);
-        _mm256_storeu_ps(data->dst + i, _mm256_mul_ps(contrast, vscale));
+        _mm256_storeu_ps(data->dst + i, _mm256_mul_ps(
+            _mm256_min_ps(contrast, _mm256_set1_ps(1000.0f)), vscale));
     }
 
     for (; i < end; i++) {
         const float L_bkg = fmaxf(0.01f, data->expanded[i]);
         data->L_bkg[i] = L_bkg;
         data->dst[i] =
-            ((data->src[i] - data->expanded[i]) / L_bkg) *
+            fminf((data->src[i] - L_bkg) / L_bkg, 1000.0f) *
             data->contrast_scale;
     }
 }
@@ -389,11 +392,13 @@ static inline void cvvdp_normalize_impl(
     int i = start;
     for (; i + 8 <= end; i += 8) {
         _mm256_storeu_ps(data->dst + i,
-                  _mm256_div_ps(_mm256_loadu_ps(data->src + i), denom));
+                  _mm256_min_ps(_mm256_div_ps(
+                _mm256_loadu_ps(data->src + i), denom),
+                _mm256_set1_ps(1000.0f)));
     }
 
     for (; i < end; i++)
-        data->dst[i] = data->src[i] / data->denom;
+        data->dst[i] = fminf(data->src[i] / data->denom, 1000.0f);
 }
 
 static inline void cvvdp_min_abs_impl(

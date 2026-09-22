@@ -106,17 +106,17 @@ static inline void cvvdp_rgb_to_xyz_impl(
         const float32x4_t g = vld1q_f32(data->y + i);
         const float32x4_t b = vld1q_f32(data->z + i);
 
-        float32x4_t x = vmulq_n_f32(r, 0.4124564f);
-        x = cvvdp_neon_madd_n(x, g, 0.3575761f);
-        x = cvvdp_neon_madd_n(x, b, 0.1804375f);
+        float32x4_t x = vmulq_n_f32(r, 0.4124f);
+        x = cvvdp_neon_madd_n(x, g, 0.3576f);
+        x = cvvdp_neon_madd_n(x, b, 0.1805f);
 
-        float32x4_t y = vmulq_n_f32(r, 0.2126729f);
-        y = cvvdp_neon_madd_n(y, g, 0.7151522f);
-        y = cvvdp_neon_madd_n(y, b, 0.0721750f);
+        float32x4_t y = vmulq_n_f32(r, 0.2126f);
+        y = cvvdp_neon_madd_n(y, g, 0.7152f);
+        y = cvvdp_neon_madd_n(y, b, 0.0722f);
 
-        float32x4_t z = vmulq_n_f32(r, 0.0193339f);
-        z = cvvdp_neon_madd_n(z, g, 0.1191920f);
-        z = cvvdp_neon_madd_n(z, b, 0.9503041f);
+        float32x4_t z = vmulq_n_f32(r, 0.0193f);
+        z = cvvdp_neon_madd_n(z, g, 0.1192f);
+        z = cvvdp_neon_madd_n(z, b, 0.9505f);
 
         vst1q_f32(data->x + i, x);
         vst1q_f32(data->y + i, y);
@@ -128,9 +128,9 @@ static inline void cvvdp_rgb_to_xyz_impl(
         const float gi = data->y[i];
         const float bi = data->z[i];
 
-        data->x[i] = 0.4124564f * ri + 0.3575761f * gi + 0.1804375f * bi;
-        data->y[i] = 0.2126729f * ri + 0.7151522f * gi + 0.0721750f * bi;
-        data->z[i] = 0.0193339f * ri + 0.1191920f * gi + 0.9503041f * bi;
+        data->x[i] = 0.4124f * ri + 0.3576f * gi + 0.1805f * bi;
+        data->y[i] = 0.2126f * ri + 0.7152f * gi + 0.0722f * bi;
+        data->z[i] = 0.0193f * ri + 0.1192f * gi + 0.9505f * bi;
     }
 }
 
@@ -205,12 +205,14 @@ static inline void cvvdp_contrast_impl(
             vmaxq_f32(vfloor, vld1q_f32(data->L_bkg + i));
         const float32x4_t contrast =
             vdivq_f32(vsubq_f32(src, expanded), L_bkg);
-        vst1q_f32(data->dst + i, vmulq_f32(contrast, vscale));
+        vst1q_f32(data->dst + i, vmulq_f32(
+            vminq_f32(contrast, vdupq_n_f32(1000.0f)), vscale));
     }
 
     for (; i < end; i++) {
         data->dst[i] =
-            ((data->src[i] - data->expanded[i]) / fmaxf(0.01f, data->L_bkg[i])) *
+            fminf((data->src[i] - data->expanded[i]) /
+                fmaxf(0.01f, data->L_bkg[i]), 1000.0f) *
             data->contrast_scale;
     }
 }
@@ -228,16 +230,17 @@ static inline void cvvdp_luma_contrast_impl(
         const float32x4_t expanded = vld1q_f32(data->expanded + i);
         const float32x4_t L_bkg = vmaxq_f32(vfloor, expanded);
         const float32x4_t contrast =
-            vdivq_f32(vsubq_f32(src, expanded), L_bkg);
+            vdivq_f32(vsubq_f32(src, L_bkg), L_bkg);
         vst1q_f32(data->L_bkg + i, L_bkg);
-        vst1q_f32(data->dst + i, vmulq_f32(contrast, vscale));
+        vst1q_f32(data->dst + i, vmulq_f32(
+            vminq_f32(contrast, vdupq_n_f32(1000.0f)), vscale));
     }
 
     for (; i < end; i++) {
         const float L_bkg = fmaxf(0.01f, data->expanded[i]);
         data->L_bkg[i] = L_bkg;
         data->dst[i] =
-            ((data->src[i] - data->expanded[i]) / L_bkg) *
+            fminf((data->src[i] - L_bkg) / L_bkg, 1000.0f) *
             data->contrast_scale;
     }
 }
@@ -251,11 +254,12 @@ static inline void cvvdp_normalize_impl(
     int i = start;
     for (; i + 4 <= end; i += 4) {
         vst1q_f32(data->dst + i,
-                  vdivq_f32(vld1q_f32(data->src + i), denom));
+                  vminq_f32(vdivq_f32(vld1q_f32(data->src + i), denom),
+                      vdupq_n_f32(1000.0f)));
     }
 
     for (; i < end; i++)
-        data->dst[i] = data->src[i] / data->denom;
+        data->dst[i] = fminf(data->src[i] / data->denom, 1000.0f);
 }
 
 static inline void cvvdp_min_abs_impl(
