@@ -1,14 +1,14 @@
 .{
     .name = .fcvvdp,
-    .version = "0.3.3",
+    .version = "0.4.0",
     .dependencies = .{
         .spng = .{
             .url = "git+https://github.com/allyourcodebase/libspng.git#8858232bde47083739c3e25f676093423610ec5e",
             .hash = "spng-0.0.1-T166cP8UAABcBGTOPKx7kUUyHEcu0eDvN8LnSIj3S_cW",
         },
         .simpleimgio = .{
-            .url = "git+https://github.com/gianni-rosato/simpleimgio.git#95df1091d81c80ac54ff116a09fd1c4a061c3c6f",
-            .hash = "simpleimgio-0.0.0-oHTuOdP9AADo0x_m-pBpu0Fi6GnqgVvbN_l2Ul4HbViE",
+            .url = "git+https://github.com/gianni-rosato/simpleimgio.git#98031ca5c7487fdc9d57f97184f3bd6044b3ab07",
+            .hash = "simpleimgio-0.0.1-oHTuOdP9AADRXI8TEcZr6hNxRYS-OH3ZoYMAS-jxxe5H",
         },
     },
     .fingerprint = 0xfe41744458a5e60e,
